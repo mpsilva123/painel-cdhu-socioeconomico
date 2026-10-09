@@ -1,0 +1,69 @@
+# Atualiza o painel a cada hora: busca as respostas no KoboToolbox,
+# gera docs/data/data.json (anonimizado) e publica no GitHub Pages.
+name: Atualizar painel (Kobo → GitHub Pages)
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # a cada hora, no minuto 7 (UTC)
+  workflow_dispatch:          # botão "Run workflow" para atualizar na hora
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write              # usado pelo keepalive (evita que o agendamento seja pausado)
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Buscar dados no Kobo e gerar data.json
+        env:
+          KOBO_TOKEN: ${{ secrets.KOBO_TOKEN }}
+          KOBO_SERVER: ${{ vars.KOBO_SERVER || 'https://kf.kobotoolbox.org' }}
+          KOBO_ASSET_UID: ${{ vars.KOBO_ASSET_UID || 'azVZhQG6BNYi9hoJxM5BfK' }}
+          SALARIO_MINIMO: ${{ vars.SALARIO_MINIMO || '1621' }}
+        run: |
+          if [ -z "$KOBO_TOKEN" ]; then
+            echo "::warning::Secret KOBO_TOKEN não configurado — publicando o data.json já versionado."
+          else
+            python scripts/build_data.py --skip-geo
+          fi
+
+      - name: Baixar malha municipal de SP (IBGE)
+        run: python -c "import sys; sys.path.insert(0,'scripts'); import build_data as b; b.ensure_geojson()" || echo "::warning::Malha do IBGE indisponível; o navegador tentará baixar direto."
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  keepalive:
+    # O GitHub pausa workflows agendados após 60 dias sem atividade no repositório.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gautamkrishnar/keepalive-workflow@v2
