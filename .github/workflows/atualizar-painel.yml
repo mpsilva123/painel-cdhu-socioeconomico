@@ -1,6 +1,7 @@
 # Atualiza o painel a cada hora: busca as respostas no KoboToolbox,
-# gera docs/data/data.json (anonimizado) e publica no GitHub Pages.
-name: Atualizar painel (Kobo → GitHub Pages)
+# gera docs/data/data.json (anonimizado) e publica no Cloudflare Pages
+# (mesmo modelo do painel da Enquete de IA).
+name: Atualizar painel (Kobo → Cloudflare Pages)
 
 on:
   schedule:
@@ -11,17 +12,17 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-  actions: write              # usado pelo keepalive (evita que o agendamento seja pausado)
 
 concurrency:
-  group: pages
+  group: publicar
   cancel-in-progress: false
 
 jobs:
-  build:
+  publicar:
     runs-on: ubuntu-latest
+    env:
+      CF_PROJECT: ${{ vars.CF_PROJECT || 'painel-cdhu-8ttkr893iu' }}
+      CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID || 'c0392c1543666a97b467ae3f952b7834' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,25 +46,22 @@ jobs:
       - name: Baixar malha municipal de SP (IBGE)
         run: python -c "import sys; sys.path.insert(0,'scripts'); import build_data as b; b.ensure_geojson()" || echo "::warning::Malha do IBGE indisponível; o navegador tentará baixar direto."
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - name: Bloquear indexação por buscadores
+        run: |
+          printf 'User-agent: *\nDisallow: /\n' > docs/robots.txt
+          printf '/*\n  X-Robots-Tag: noindex, nofollow, noarchive\n  Cache-Control: no-cache\n  Referrer-Policy: no-referrer\n' > docs/_headers
+
+      - name: Criar projeto no Cloudflare (só na primeira vez)
+        uses: cloudflare/wrangler-action@v3
+        continue-on-error: true
         with:
-          path: docs
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CF_ACCOUNT }}
+          command: pages project create ${{ env.CF_PROJECT }} --production-branch=main
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-
-  keepalive:
-    # O GitHub pausa workflows agendados após 60 dias sem atividade no repositório.
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: gautamkrishnar/keepalive-workflow@v2
+      - name: Publicar no Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CF_ACCOUNT }}
+          command: pages deploy docs --project-name=${{ env.CF_PROJECT }} --branch=main --commit-dirty=true
